@@ -1,0 +1,350 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id                 String            @id
+  name               String
+  email              String            @unique
+  emailVerified      Boolean
+  image              String?
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
+  academicTitle      String?
+  institution        String?
+  onboardingComplete Boolean           @default(false)
+  accounts           Account[]
+  logs               ProjectLog[]
+  memberships        ProjectMember[]
+  projects           Project[]
+  votes              ScreeningVote[]
+  sessions           Session[]
+  integrations       UserIntegration[]
+
+  @@map("user")
+}
+
+model Session {
+  id        String   @id
+  expiresAt DateTime
+  token     String   @unique
+  createdAt DateTime
+  updatedAt DateTime
+  ipAddress String?
+  userAgent String?
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("session")
+}
+
+model Account {
+  id                    String    @id
+  accountId             String
+  providerId            String
+  userId                String
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?
+  password              String?
+  createdAt             DateTime
+  updatedAt             DateTime
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("account")
+}
+
+model Verification {
+  id         String    @id
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime?
+  updatedAt  DateTime?
+
+  @@map("verification")
+}
+
+model Project {
+  id                  String                  @id @default(uuid())
+  slug                String                  @unique
+  title               String
+  researchQuestion    String
+  area                String
+  reviewType          String?
+  reviewFramework     String?
+  databases           String[]
+  yearFrom            Int?
+  yearTo              Int?
+  keywords            String[]
+  languages           String[]
+  inclusionCriteria   String[]
+  exclusionCriteria   String[]
+  methodologicalNotes String?
+  prismaNotes         String?
+  status              String                  @default("active")
+  isFavorite          Boolean                 @default(false)
+  createdAt           DateTime                @default(now())
+  updatedAt           DateTime                @updatedAt
+  searchStrings       Json                    @default("{}")
+  prismaChecklist     Json                    @default("{}")
+  exportPreferences   Json                    @default("{}")
+  userId              String
+  customColumns       CustomScreeningColumn[]
+  importBatches       ImportBatch[]
+  logs                ProjectLog[]
+  members             ProjectMember[]
+  user                User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  references          Reference[]
+  themes              Theme[]
+
+  @@map("projects")
+}
+
+model ProjectLog {
+  id        String   @id @default(uuid())
+  action    String
+  details   String?
+  metadata  Json?
+  createdAt DateTime @default(now())
+  projectId String
+  userId    String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("project_logs")
+}
+
+model ProjectMember {
+  id        String   @id @default(uuid())
+  role      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  projectId String
+  userId    String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, userId])
+  @@map("project_members")
+}
+
+model ScreeningVote {
+  id          String    @id @default(uuid())
+  vote        String
+  reason      String?
+  stage       String
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  referenceId String
+  userId      String
+  reference   Reference @relation(fields: [referenceId], references: [id], onDelete: Cascade)
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([referenceId, userId])
+  @@map("screening_votes")
+}
+
+model UserIntegration {
+  id           String   @id @default(uuid())
+  provider     String
+  accessToken  String
+  refreshToken String?
+  externalId   String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, provider])
+  @@map("user_integrations")
+}
+
+model Reference {
+  id                  String          @id @default(uuid())
+  title               String
+  authors             String[]
+  year                Int?
+  journal             String?
+  doi                 String?
+  url                 String?
+  abstractNote        String?
+  keywords            String[]
+  database            String?
+  type                String
+  stage               String
+  exclusionReason     String?
+  exclusionCategory   String?
+  notes               String?
+  qualityScore        Int?            @default(0)
+  importedFrom        String?
+  importBatchId       String?
+  volume              String?
+  issue               String?
+  pages               String?
+  publisher           String?
+  isbn                String?
+  language            String?
+  zoteroKey           String?
+  issn                String?
+  publicationDate     String?
+  dateAdded           DateTime?
+  dateModified        DateTime?
+  accessDate          String?
+  numPages            String?
+  numberOfVolumes     String?
+  journalAbbreviation String?
+  shortTitle          String?
+  series              String?
+  seriesNumber        String?
+  seriesText          String?
+  seriesTitle         String?
+  place               String?
+  rights              String?
+  archive             String?
+  archiveLocation     String?
+  callNumber          String?
+  extra               String?
+  fileAttachments     String?
+  linkAttachments     String?
+  editor              String?
+  seriesEditor        String?
+  translator          String?
+  contributor         String?
+  bookAuthor          String?
+  number              String?
+  edition             String?
+  conferenceName      String?
+  meetingName         String?
+  country             String?
+  programmingLanguage String?
+  version             String?
+  screeningPhase      String?
+  bibliographicExtras Json            @default("{}")
+  createdAt           DateTime        @default(now())
+  updatedAt           DateTime        @updatedAt
+  projectId           String
+  applicationNumber   String?
+  artworkSize         String?
+  assignee            String?
+  attorneyAgent       String?
+  automaticTags       String?
+  bibReferences       String?
+  castMember          String?
+  code                String?
+  codeNumber          String?
+  commenter           String?
+  committee           String?
+  composer            String?
+  cosponsor           String?
+  counsel             String?
+  court               String?
+  filingDate          String?
+  guest               String?
+  history             String?
+  interviewer         String?
+  issuingAuthority    String?
+  itemType            String?
+  legalStatus         String?
+  legislativeBody     String?
+  libraryCatalog      String?
+  manualTags          String?
+  medium              String?
+  priorityNumbers     String?
+  producer            String?
+  recipient           String?
+  reporter            String?
+  reviewedAuthor      String?
+  runningTime         String?
+  scale               String?
+  scriptwriter        String?
+  section             String?
+  session             String?
+  system              String?
+  wordsBy             String?
+  extraction          Extraction?
+  importBatch         ImportBatch?    @relation(fields: [importBatchId], references: [id])
+  project             Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  votes               ScreeningVote[]
+  themes              Theme[]         @relation("ReferenceThemes")
+
+  @@map("references")
+}
+
+model Extraction {
+  id                      String    @id @default(uuid())
+  objective               String?
+  participantsContext     String?
+  educationalLevel        String?
+  country                 String?
+  ageRange                String?
+  participantsN           String?
+  duration                String?
+  methodology             String?
+  instruments             String[]
+  toolPlatform            String?
+  gamificationElements    String[]
+  gamificationFramework   String?
+  gamificationType        String?
+  keyFindings             String?
+  motivationImpact        String?
+  performanceImpact       String?
+  theoreticalFramework    String?
+  limitations             String?
+  pedagogicalImplications String?
+  synthesisNotes          String?
+  personalRelevance       String?
+  qualityScore            Int?      @default(0)
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+  referenceId             String    @unique
+  reference               Reference @relation(fields: [referenceId], references: [id], onDelete: Cascade)
+
+  @@map("extractions")
+}
+
+model Theme {
+  id          String      @id @default(uuid())
+  name        String
+  color       String
+  description String?
+  projectId   String
+  project     Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  references  Reference[] @relation("ReferenceThemes")
+
+  @@map("themes")
+}
+
+model CustomScreeningColumn {
+  id                       String  @id @default(uuid())
+  label                    String
+  defaultExclusionCategory String
+  color                    String?
+  projectId                String
+  project                  Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@map("custom_screening_columns")
+}
+
+model ImportBatch {
+  id         String      @id @default(uuid())
+  date       DateTime    @default(now())
+  filename   String
+  format     String
+  imported   Int
+  duplicates Int
+  errors     Int
+  notes      String?
+  projectId  String
+  project    Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  references Reference[]
+
+  @@map("import_batches")
+}
