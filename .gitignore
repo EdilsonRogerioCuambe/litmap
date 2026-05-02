@@ -30,3 +30,5 @@ build/
 .npm
 .yarn
 .pnpm-debug.log*
+
+.vercel
