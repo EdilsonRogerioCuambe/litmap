@@ -22,9 +22,19 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { useStore } from "@/lib/store"
-import type { Reference, ReferenceType, Stage } from "@/lib/types"
-import { STAGE_COLORS, STAGE_LABELS } from "@/lib/types"
-import { Loader2, Search, X } from "lucide-react"
+import type { Reference, ReferenceType, Stage, ExclusionCategory } from "@/lib/types"
+import { STAGE_COLORS, STAGE_LABELS, STAGES } from "@/lib/types"
+import { Loader2, Search, X, ArrowRightLeft, FileWarning } from "lucide-react"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import { toast } from "sonner"
 import { useParams } from "next/navigation"
 import { addReferenceAction } from "@/lib/actions/reference"
@@ -439,10 +449,14 @@ export function ReferenceDetailModal({
   reference,
   open,
   onOpenChange,
+  onMove,
+  onQuickExclude,
 }: {
   reference: Reference | null
   open: boolean
   onOpenChange: (open: boolean) => void
+  onMove?: (id: string, target: Stage) => void
+  onQuickExclude?: (id: string, cat: ExclusionCategory, reason: string) => void
 }) {
   const { state } = useStore()
   const extraction = useMemo(
@@ -484,6 +498,71 @@ export function ReferenceDetailModal({
                 {reference.journal ? <span className="mx-2 text-[#E5E2DA]">·</span> : null}
                 {reference.journal && <span className="italic text-[#6B8F71]">{reference.journal}</span>}
               </DialogDescription>
+            </div>
+            
+            {/* Quick Actions */}
+            <div className="flex shrink-0 gap-2 items-center">
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" className="border-[#1C1C1E] text-[#1C1C1E] rounded-xl font-bold text-xs gap-2 h-9 px-4">
+                    <ArrowRightLeft className="w-3.5 h-3.5" />
+                    Ações Rápidas
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-52 rounded-xl shadow-xl border-[#E5E2DA]">
+                  <DropdownMenuSub>
+                    <DropdownMenuSubTrigger className="gap-2 text-xs">
+                      <ArrowRightLeft className="w-3.5 h-3.5" /> Mover para...
+                    </DropdownMenuSubTrigger>
+                    <DropdownMenuSubContent className="rounded-xl border-[#E5E2DA]">
+                      {STAGES.filter((s) => s !== reference.stage).map((s) => (
+                        <DropdownMenuItem
+                          key={s}
+                          className="gap-2 text-xs"
+                          onClick={() => {
+                            onMove?.(reference.id, s)
+                            onOpenChange(false)
+                          }}
+                        >
+                          <div
+                            className="w-2 h-2 rounded-full"
+                            style={{ background: STAGE_COLORS[s].border }}
+                          />
+                          {STAGE_LABELS[s]}
+                        </DropdownMenuItem>
+                      ))}
+                    </DropdownMenuSubContent>
+                  </DropdownMenuSub>
+
+                  {reference.stage !== "excluded" && (
+                    <DropdownMenuSub>
+                      <DropdownMenuSubTrigger className="gap-2 text-xs text-[#B94040] focus:text-[#B94040]">
+                        <X className="w-3.5 h-3.5" /> Excluir rapidamente
+                      </DropdownMenuSubTrigger>
+                      <DropdownMenuSubContent className="rounded-xl border-[#E5E2DA] w-52">
+                        {[
+                          { cat: "Duplicado", reason: "Identificado como duplicado na triagem rápida." },
+                          { cat: "Tese/Dissertação", reason: "Trabalho académico (tese/dissertação) fora do escopo." },
+                          { cat: "Capítulo de Livro", reason: "Capítulo de livro fora do escopo." },
+                          { cat: "Livro", reason: "Livro (monografia) fora do escopo." },
+                          { cat: "Remoção por Título", reason: "Título não relacionado com o tema." },
+                        ].map(({ cat, reason }) => (
+                          <DropdownMenuItem
+                            key={cat}
+                            className="text-xs"
+                            onClick={() => {
+                              onQuickExclude?.(reference.id, cat as ExclusionCategory, reason)
+                              onOpenChange(false)
+                            }}
+                          >
+                            {cat}
+                          </DropdownMenuItem>
+                        ))}
+                      </DropdownMenuSubContent>
+                    </DropdownMenuSub>
+                  )}
+                </DropdownMenuContent>
+              </DropdownMenu>
             </div>
           </div>
         </div>

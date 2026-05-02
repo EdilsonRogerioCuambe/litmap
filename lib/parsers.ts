@@ -582,35 +582,91 @@ export function parseFile(filename: string, text: string): ParsedReference[] {
 }
 
 /* --------------------------- Duplicates ----------------------------- */
-function normalize(s: string): string {
-  return s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim()
+/* --------------------------- Duplicates ----------------------------- */
+
+/**
+ * Jaro-Winkler Similarity Algorithm
+ * Returns a score between 0 and 1
+ */
+export function jaroWinkler(s1: string, s2: string): number {
+  if (s1.length === 0 || s2.length === 0) return 0
+  if (s1 === s2) return 1
+
+  const m = 0
+  const matchWindow = Math.floor(Math.max(s1.length, s2.length) / 2) - 1
+  const s1Matches = new Array(s1.length).fill(false)
+  const s2Matches = new Array(s2.length).fill(false)
+
+  let matches = 0
+  for (let i = 0; i < s1.length; i++) {
+    const start = Math.max(0, i - matchWindow)
+    const end = Math.min(i + matchWindow + 1, s2.length)
+    for (let j = start; j < end; j++) {
+      if (!s2Matches[j] && s1[i] === s2[j]) {
+        s1Matches[i] = true
+        s2Matches[j] = true
+        matches++
+        break
+      }
+    }
+  }
+
+  if (matches === 0) return 0
+
+  let transpositions = 0
+  let k = 0
+  for (let i = 0; i < s1.length; i++) {
+    if (s1Matches[i]) {
+      while (!s2Matches[k]) k++
+      if (s1[i] !== s2[k]) transpositions++
+      k++
+    }
+  }
+
+  const jaro = (matches / s1.length + matches / s2.length + (matches - transpositions / 2) / matches) / 3
+  const prefixLength = 0
+  const p = 0.1
+  
+  // Winkler adjustment
+  let prefix = 0
+  for (let i = 0; i < Math.min(4, s1.length, s2.length); i++) {
+    if (s1[i] === s2[i]) prefix++
+    else break
+  }
+
+  return jaro + prefix * p * (1 - jaro)
 }
 
-function similarity(a: string, b: string): number {
-  // Simple Jaccard on words
-  const sa = new Set(normalize(a).split(/\s+/))
-  const sb = new Set(normalize(b).split(/\s+/))
-  if (!sa.size || !sb.size) return 0
-  let inter = 0
-  sa.forEach((w) => sb.has(w) && inter++)
-  return inter / Math.max(sa.size, sb.size)
+const STOPWORDS = new Set([
+  "the", "a", "an", "of", "in", "and", "or", "for", "to", "with", "on", "at", "by", "from", "up", "about", "into", "over", "after",
+  "o", "a", "os", "as", "um", "uma", "uns", "umas", "de", "do", "da", "dos", "das", "em", "no", "na", "nos", "nas", "e", "ou", "para", "com", "por", "sobre"
+])
+
+function normalize(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/[^\w\s]/g, " ")
+    .split(/\s+/)
+    .filter(word => word && !STOPWORDS.has(word))
+    .join(" ")
+    .trim()
 }
 
 export function markDuplicates(
   parsed: ParsedReference[],
   existing: { title: string; doi: string | null }[] = [],
 ): ParsedReference[] {
-  const seenDois = new Set(existing.filter((e) => e.doi).map((e) => (e.doi as string).toLowerCase()))
+  const seenDois = new Set(existing.filter((e) => e.doi).map((e) => (e.doi as string).toLowerCase().trim()))
   const seenTitlesNormalized = new Set(existing.map((e) => normalize(e.title)))
   
-  // For fuzzy matching, we keep a limited list to avoid O(N*M) explosion
-  const fuzzyTitles = existing.length < 5000 ? existing.map(e => e.title) : []
+  // For fuzzy matching
+  const fuzzyTitles = existing.length < 5000 ? existing.map(e => ({ original: e.title, normalized: normalize(e.title) })) : []
 
   const out: ParsedReference[] = []
   
   for (const r of parsed) {
     const normalizedTitle = normalize(r.title)
-    const doiLower = r.doi?.toLowerCase()
+    const doiLower = r.doi?.toLowerCase().trim()
 
     // 1. Check exact DOI
     const dupByDoi = !!doiLower && seenDois.has(doiLower)
@@ -618,17 +674,17 @@ export function markDuplicates(
     // 2. Check exact normalized title
     const dupByExactTitle = !dupByDoi && seenTitlesNormalized.has(normalizedTitle)
 
-    // 3. Check fuzzy similarity (only if not too large)
+    // 3. Check fuzzy similarity (Jaro-Winkler > 0.85)
     let dupByFuzzy = false
-    if (!dupByDoi && !dupByExactTitle && fuzzyTitles.length > 0 && fuzzyTitles.length < 2000) {
-      dupByFuzzy = fuzzyTitles.some(t => similarity(t, r.title) > 0.9)
+    if (!dupByDoi && !dupByExactTitle && fuzzyTitles.length > 0 && fuzzyTitles.length < 1000) {
+      dupByFuzzy = fuzzyTitles.some(t => jaroWinkler(t.normalized, normalizedTitle) > 0.85)
     }
 
     // 4. Check duplicate within the new batch
     const dupInBatch = !dupByDoi && !dupByExactTitle && !dupByFuzzy
       ? out.some(
           (o) =>
-            (o.doi && r.doi && o.doi.toLowerCase() === r.doi.toLowerCase()) ||
+            (o.doi && r.doi && o.doi.toLowerCase().trim() === r.doi.toLowerCase().trim()) ||
             normalize(o.title) === normalizedTitle
         )
       : false
@@ -636,11 +692,11 @@ export function markDuplicates(
     const isDuplicate = dupByDoi || dupByExactTitle || dupByFuzzy || dupInBatch
     out.push({ ...r, __duplicate: isDuplicate })
 
-    // Update trackers
+    // Update trackers for next iterations in the same batch
     if (doiLower) seenDois.add(doiLower)
     seenTitlesNormalized.add(normalizedTitle)
-    if (fuzzyTitles.length > 0 && fuzzyTitles.length < 2000) {
-      fuzzyTitles.push(r.title)
+    if (fuzzyTitles.length < 1000) {
+      fuzzyTitles.push({ original: r.title, normalized: normalizedTitle })
     }
   }
   return out

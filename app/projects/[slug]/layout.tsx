@@ -218,7 +218,7 @@ export default function ProjectLayout({ children }: { children: React.ReactNode 
       </nav>
 
       {/* Main Content Area */}
-      <div className="flex-1 flex flex-col lg:ml-64 bg-[#FAF8F4] h-screen overflow-x-hidden relative z-0 w-full transition-all duration-300">
+      <div className="flex-1 flex flex-col lg:ml-64 bg-[#FAF8F4] min-h-0 overflow-hidden relative z-0 w-full transition-all duration-300">
         {/* TopAppBar */}
         <header className="flex justify-between items-center h-16 px-4 lg:px-8 sticky top-0 z-30 bg-[#FAF8F4]/80 backdrop-blur-md border-b border-[#E5E2DA]">
           <div className="flex items-center gap-4 min-w-0">
@@ -260,8 +260,8 @@ export default function ProjectLayout({ children }: { children: React.ReactNode 
         </header>
 
         {/* Page Content */}
-        <main className="flex-1 overflow-y-auto relative w-full">
-          <div className="max-w-[1600px] mx-auto w-full min-h-full">
+        <main className="flex-1 min-h-0 overflow-y-auto relative w-full">
+          <div className="h-full w-full max-w-[1600px] mx-auto">
             {children}
           </div>
         </main>

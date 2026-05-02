@@ -1,585 +1,390 @@
 "use client"
 
-import { useMemo, useState, useEffect } from "react"
+import { useMemo, useState, useCallback } from "react"
+import { DragDropContext, DropResult } from "@hello-pangea/dnd"
 import { useStore } from "@/lib/store"
-import { Button } from "@/components/ui/button"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
+import { useParams, useRouter } from "next/navigation"
+import { toast } from "sonner"
+import { ArrowRight, X } from "lucide-react"
+
+import { KanbanHeader } from "../kanban/kanban-header"
+import { ScreeningProgressBar } from "../kanban/screening-progress-bar"
+import { KanbanColumn } from "../kanban/kanban-column"
+import { BulkActionsToolbar } from "../kanban/bulk-actions-toolbar"
+import { DuplicateFinderModal } from "../kanban/duplicate-finder-modal"
+import { RetractionModal } from "../kanban/retraction-modal"
+import type { RetractionInfo } from "../kanban/retraction-modal"
+
 import { AddReferenceModal, ReferenceDetailModal } from "../reference-modal"
 import { ExclusionModal } from "../exclusion-modal"
-import {
-  Star,
-  X,
-  ArrowRightLeft,
-  MoreHorizontal,
-  Eye,
-  ExternalLink,
-  Trash2,
-  ChevronDown,
-} from "lucide-react"
-import {
-  DragDropContext,
-  Droppable,
-  Draggable,
-  type DropResult,
-} from "@hello-pangea/dnd"
-import type { ExclusionCategory, Reference, Stage } from "@/lib/types"
-import { STAGE_COLORS, STAGE_LABELS, STAGES } from "@/lib/types"
-import { Badge } from "@/components/ui/badge"
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog"
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuSub,
-  DropdownMenuSubContent,
-  DropdownMenuSubTrigger,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu"
-import { toast } from "sonner"
-import { cn } from "@/lib/utils"
 
-import { useParams, useRouter } from "next/navigation"
-import { updateReferenceAction, moveReferenceAction, deleteReferenceAction } from "@/lib/actions/reference"
+import {
+  moveReferenceAction,
+  updateReferenceAction,
+  deleteReferenceAction,
+  bulkUpdateReferencesAction,
+} from "@/lib/actions/reference"
+import type { Reference, Stage, ExclusionCategory } from "@/lib/types"
+import { STAGE_LABELS } from "@/lib/types"
 
 const PAGE_SIZE = 25
 
+// ─── Main Kanban View ─────────────────────────────────────────────────────────
+
 export function KanbanView({ onNavigate }: { onNavigate: (id: string) => void }) {
+  const { state, moveReference, updateReference, deleteReference } = useStore()
   const params = useParams()
   const router = useRouter()
   const slug = params.slug as string
-  const { state, moveReference, deleteReference, updateReference } = useStore()
-  const [openAdd, setOpenAdd] = useState(false)
-  const [detailRef, setDetailRef] = useState<Reference | null>(null)
-  const [deleteConfirm, setDeleteConfirm] = useState<Reference | null>(null)
-  const [exclusion, setExclusion] = useState<{ refId: string } | null>(null)
 
-  const [search, setSearch] = useState("")
-  const [dbFilter, setDbFilter] = useState<string>("__all")
-  const [yearMin, setYearMin] = useState("")
-  const [yearMax, setYearMax] = useState("")
-  const [methodologyFilter, setMethodologyFilter] = useState("__all")
-
-  // Pagination state per stage
-  const [pages, setPages] = useState<Record<Stage, number>>({
-    identification: 1,
-    screening: 1,
-    eligibility: 1,
-    included: 1,
-    excluded: 1,
+  const [visibleCounts, setVisibleCounts] = useState<Record<Stage, number>>({
+    identification: PAGE_SIZE,
+    screening: PAGE_SIZE,
+    eligibility: PAGE_SIZE,
+    included: PAGE_SIZE,
+    excluded: PAGE_SIZE,
   })
 
-  // Reset pages on filter change
-  useEffect(() => {
-    setPages({ identification: 1, screening: 1, eligibility: 1, included: 1, excluded: 1 })
-  }, [search, dbFilter, yearMin, yearMax, methodologyFilter])
+  // --- Selection ---
+  const [selectionMode, setSelectionMode] = useState(false)
+  const [selectedIds, setSelectedIds] = useState<string[]>([])
 
-  const allDatabases = useMemo(() => {
+  // --- Modals ---
+  const [openAdd, setOpenAdd] = useState(false)
+  const [detailRef, setDetailRef] = useState<Reference | null>(null)
+  const [exclusion, setExclusion] = useState<{ refId: string; targetStage: Stage } | null>(null)
+  const [showDuplicateFinder, setShowDuplicateFinder] = useState(false)
+  const [retractionTarget, setRetractionTarget] = useState<Reference | null>(null)
+
+  // --- Derived ---
+  const databases = useMemo(() => {
     const set = new Set<string>()
     state.references.forEach((r) => r.database && set.add(r.database))
     return Array.from(set).sort()
   }, [state.references])
 
-  const filtered = useMemo(() => {
-    return state.references.filter((r) => {
-      if (search) {
-        const q = search.toLowerCase()
-        const hay =
-          r.title +
-          " " +
-          r.authors.join(" ") +
-          " " +
-          (r.abstractNote || "") +
-          " " +
-          (r.journal || "")
-        if (!hay.toLowerCase().includes(q)) return false
+  const columns = useMemo(() => {
+    const stages: Stage[] = ["identification", "screening", "eligibility", "included", "excluded"]
+    return stages.map((s) => ({
+      id: s,
+      refs: state.references.filter((r) => r.stage === s),
+    }))
+  }, [state.references])
+
+  // --- Progress bar stats ---
+  const stats = useMemo(() => {
+    const stages: Stage[] = ["identification", "screening", "eligibility", "included"]
+    const total = state.references.length
+
+    return stages.map((s) => {
+      let entered = 0
+      let left = 0
+
+      if (s === "identification") {
+        entered = total
+        left = state.references.filter((r) => r.stage !== "identification").length
+      } else if (s === "screening") {
+        entered = state.references.filter((r) => r.stage !== "identification").length
+        left = entered - state.references.filter((r) => r.stage === "screening").length
+      } else if (s === "eligibility") {
+        entered = state.references.filter(
+          (r) =>
+            ["eligibility", "included"].includes(r.stage) ||
+            (r.stage === "excluded" &&
+              r.exclusionCategory !== "Remoção por Título" &&
+              r.exclusionCategory !== "Remoção por Resumo")
+        ).length
+        left = entered - state.references.filter((r) => r.stage === "eligibility").length
       }
-      if (dbFilter !== "__all" && r.database !== dbFilter) return false
-      if (yearMin && r.year && r.year < parseInt(yearMin, 10)) return false
-      if (yearMax && r.year && r.year > parseInt(yearMax, 10)) return false
-      if (methodologyFilter !== "__all") {
-        const ext = state.extractions.find((e) => e.referenceId === r.id)
-        if (!ext || ext.methodology !== methodologyFilter) return false
-      }
-      return true
+
+      const percentage = entered > 0 ? Math.round((left / entered) * 100) : 0
+      return { stage: s, entered, left, percentage }
     })
-  }, [state.references, state.extractions, search, dbFilter, yearMin, yearMax, methodologyFilter])
+  }, [state.references])
 
-  const byStage = useMemo(() => {
-    const groups: Record<Stage, Reference[]> = {
-      identification: [],
-      screening: [],
-      eligibility: [],
-      included: [],
-      excluded: [],
-    }
-    filtered.forEach((r) => groups[r.stage].push(r))
-    return groups
-  }, [filtered])
+  // --- Handlers ---
+  const handleDragEnd = async (result: DropResult) => {
+    const { draggableId, source, destination } = result
+    if (!destination) return
+    if (source.droppableId === destination.droppableId) return
 
-  const onDragEnd = async (result: DropResult) => {
-    if (!result.destination) return
-    const refId = result.draggableId
-    const target = result.destination.droppableId as Stage
-    const ref = state.references.find((r) => r.id === refId)
-    if (!ref || ref.stage === target) return
-    if (target === "excluded") {
-      setExclusion({ refId })
-      return
-    }
-    const originalStage = ref.stage
-    moveReference(refId, target)
-    try {
-      await moveReferenceAction(slug, refId, target)
-      toast.success(`Movido para ${STAGE_LABELS[target]}.`)
-    } catch (err: any) {
-      moveReference(refId, originalStage)
-      toast.error("Erro ao mover: " + err.message)
+    const targetStage = destination.droppableId as Stage
+    const refId = draggableId
+
+    if (targetStage === "excluded") {
+      setExclusion({ refId, targetStage })
+    } else {
+      const toastId = toast.loading(`A mover para ${targetStage}...`)
+      const originalRef = state.references.find((r) => r.id === refId)
+      moveReference(refId, targetStage)
+
+      try {
+        await moveReferenceAction(slug, refId, targetStage)
+        toast.success("Movido com sucesso", { id: toastId })
+      } catch (err: unknown) {
+        if (originalRef) moveReference(refId, originalRef.stage)
+        const message = err instanceof Error ? err.message : "Erro desconhecido"
+        toast.error("Erro ao mover: " + message, { id: toastId })
+      }
     }
   }
 
   const confirmExclusion = async (cat: ExclusionCategory, reason: string) => {
     if (!exclusion) return
-    const originalStage = state.references.find((r) => r.id === exclusion.refId)?.stage
-    moveReference(exclusion.refId, "excluded", {
-      exclusionCategory: cat,
-      exclusionReason: reason,
-    })
+    const { refId, targetStage } = exclusion
+    const toastId = toast.loading("A excluir referência...")
+    const originalRef = state.references.find((r) => r.id === refId)
+
+    moveReference(refId, targetStage, { exclusionCategory: cat, exclusionReason: reason })
+
     try {
-      await moveReferenceAction(slug, exclusion.refId, "excluded", { exclusionCategory: cat, exclusionReason: reason })
-      toast.success("Referência excluída.")
-    } catch (err: any) {
-      if (originalStage) moveReference(exclusion.refId, originalStage)
-      toast.error("Erro ao excluir: " + err.message)
+      await moveReferenceAction(slug, refId, targetStage, { exclusionCategory: cat, exclusionReason: reason })
+      toast.success("Excluída com sucesso", { id: toastId })
+    } catch (err: unknown) {
+      if (originalRef) moveReference(refId, originalRef.stage)
+      const message = err instanceof Error ? err.message : "Erro desconhecido"
+      toast.error("Erro ao excluir: " + message, { id: toastId })
     }
     setExclusion(null)
   }
 
-  const loadMore = (stage: Stage) => {
-    setPages((prev) => ({ ...prev, [stage]: prev[stage] + 1 }))
+  const handleUpdateQuality = async (id: string, score: number) => {
+    const originalRef = state.references.find((r) => r.id === id)
+    updateReference(id, { qualityScore: score })
+    try {
+      await updateReferenceAction(slug, id, { qualityScore: score })
+    } catch {
+      if (originalRef) updateReference(id, { qualityScore: originalRef.qualityScore })
+      toast.error("Erro ao actualizar qualidade")
+    }
   }
 
+  const handleMove = async (refId: string, targetStage: Stage) => {
+    const originalRef = state.references.find((r) => r.id === refId)
+    const toastId = toast.loading(`A mover para ${STAGE_LABELS[targetStage]}...`)
+    moveReference(refId, targetStage)
+
+    try {
+      await moveReferenceAction(slug, refId, targetStage)
+      toast.success("Movido com sucesso", { id: toastId })
+    } catch (err: unknown) {
+      if (originalRef) moveReference(refId, originalRef.stage)
+      const message = err instanceof Error ? err.message : "Erro desconhecido"
+      toast.error("Erro ao mover: " + message, { id: toastId })
+    }
+  }
+
+  const handleDelete = async (ref: Reference) => {
+    if (!confirm(`Tens a certeza que queres eliminar permanentemente "${ref.title}"?`)) return
+    const toastId = toast.loading("A eliminar...")
+    try {
+      await deleteReferenceAction(slug, ref.id)
+      deleteReference(ref.id)
+      toast.success("Eliminado com sucesso", { id: toastId })
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Erro desconhecido"
+      toast.error("Erro ao eliminar: " + message, { id: toastId })
+    }
+  }
+
+  const handleQuickExclude = useCallback(async (refId: string, cat: ExclusionCategory, reason: string) => {
+    const originalRef = state.references.find((r) => r.id === refId)
+    const toastId = toast.loading("A excluir...")
+    moveReference(refId, "excluded", { exclusionCategory: cat, exclusionReason: reason })
+    try {
+      await moveReferenceAction(slug, refId, "excluded", { exclusionCategory: cat, exclusionReason: reason })
+      toast.success("Excluída com sucesso", { id: toastId })
+    } catch (err: unknown) {
+      if (originalRef) moveReference(refId, originalRef.stage)
+      const message = err instanceof Error ? err.message : "Erro desconhecido"
+      toast.error("Erro ao excluir: " + message, { id: toastId })
+    }
+  }, [slug, moveReference, state.references])
+
+  const handleSelect = (id: string, selected: boolean) => {
+    if (selected) {
+      setSelectedIds((prev) => [...prev, id])
+    } else {
+      setSelectedIds((prev) => prev.filter((i) => i !== id))
+    }
+  }
+
+  const handleBulkMove = async (target: Stage) => {
+    if (selectedIds.length === 0) return
+    const toastId = toast.loading(`A mover ${selectedIds.length} referências...`)
+    selectedIds.forEach((id) => moveReference(id, target))
+
+    try {
+      await bulkUpdateReferencesAction(slug, selectedIds, { stage: target })
+      toast.success("Actualização em massa concluída", { id: toastId })
+      setSelectedIds([])
+      setSelectionMode(false)
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Erro desconhecido"
+      toast.error("Erro na actualização em massa: " + message, { id: toastId })
+      router.refresh()
+    }
+  }
+
+  const handleBulkExclude = async (cat: ExclusionCategory) => {
+    if (selectedIds.length === 0) return
+    const toastId = toast.loading(`A excluir ${selectedIds.length} referências...`)
+    selectedIds.forEach((id) =>
+      moveReference(id, "excluded", { exclusionCategory: cat, exclusionReason: "Exclusão em massa" })
+    )
+
+    try {
+      await bulkUpdateReferencesAction(slug, selectedIds, {
+        stage: "excluded",
+        exclusionCategory: cat,
+        exclusionReason: "Exclusão em massa",
+      })
+      toast.success("Exclusão em massa concluída", { id: toastId })
+      setSelectedIds([])
+      setSelectionMode(false)
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Erro desconhecido"
+      toast.error("Erro na exclusão em massa: " + message, { id: toastId })
+      router.refresh()
+    }
+  }
+
+  // Bulk advance all refs from one stage to the next
+  const handleBulkAdvance = useCallback(async (from: Stage, to: Stage) => {
+    const toAdvance = state.references
+      .filter((r) => r.stage === from)
+      .map((r) => r.id)
+
+    if (toAdvance.length === 0) return
+    const toastId = toast.loading(`A mover ${toAdvance.length} referências de ${from} → ${to}...`)
+    toAdvance.forEach((id) => moveReference(id, to))
+
+    try {
+      await bulkUpdateReferencesAction(slug, toAdvance, { stage: to })
+      toast.success(`${toAdvance.length} referências movidas para ${to}!`, { id: toastId })
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Erro desconhecido"
+      toast.error("Erro: " + message, { id: toastId })
+      router.refresh()
+    }
+  }, [state.references, slug, moveReference, router])
+
+  // Retraction handler
+  const handleConfirmRetraction = useCallback(async (info: RetractionInfo) => {
+    if (!retractionTarget) return
+    const ref = retractionTarget
+    const toastId = toast.loading("A registar retratação...")
+
+    const reason = [
+      info.retractionReason,
+      info.retractionDate ? `Data: ${info.retractionDate}` : null,
+      info.retractionUrl ? `URL: ${info.retractionUrl}` : null,
+    ].filter(Boolean).join(" | ")
+
+    moveReference(ref.id, "excluded", {
+      exclusionCategory: "Artigo Retratado",
+      exclusionReason: reason,
+    })
+
+    try {
+      await moveReferenceAction(slug, ref.id, "excluded", {
+        exclusionCategory: "Artigo Retratado",
+        exclusionReason: reason,
+      })
+      toast.success("Artigo marcado como retratado", { id: toastId })
+    } catch (err: unknown) {
+      moveReference(ref.id, ref.stage)
+      const message = err instanceof Error ? err.message : "Erro desconhecido"
+      toast.error("Erro: " + message, { id: toastId })
+    }
+    setRetractionTarget(null)
+  }, [retractionTarget, slug, moveReference])
+
+  // ─── Render ────────────────────────────────────────────────────────────────
+
   return (
-    <>
-      {/* Board Summary */}
-      <div className="px-8 py-4 bg-[#FAF9F6] border-b border-[#E5E2DA] flex items-center gap-6 overflow-x-auto">
-        {STAGES.map((s) => (
-          <div key={s} className="flex flex-col gap-0.5 min-w-[120px]">
-            <div className="text-[10px] uppercase tracking-wider font-bold text-[#A1A1AA]">
-              {STAGE_LABELS[s]}
-            </div>
-            <div className="flex items-baseline gap-2">
-              <span className="text-xl font-serif font-semibold text-[#444444]">
-                {byStage[s].length}
-              </span>
-              <span className="text-[10px] text-[#A1A1AA]">
-                {state.references.length > 0
-                  ? `${Math.round((byStage[s].length / state.references.length) * 100)}%`
-                  : "0%"}
-              </span>
-            </div>
-            <div className="w-full h-1 bg-[#E5E2DA] rounded-full overflow-hidden mt-1">
-              <div
-                className="h-full transition-all duration-500"
-                style={{
-                  width: `${(byStage[s].length / (state.references.length || 1)) * 100}%`,
-                  background: STAGE_COLORS[s].border,
-                }}
+    // calc(100vh - 64px) = full viewport minus topbar height (h-16 = 64px)
+    // This avoids fighting with the layout's overflow-y-auto main container
+    <div className="flex flex-col bg-[#FAF8F4]" style={{ height: "calc(100vh - 64px)" }}>
+      <KanbanHeader
+        onAddReference={() => setOpenAdd(true)}
+        onOpenDuplicateFinder={() => setShowDuplicateFinder(true)}
+      />
+
+      <ScreeningProgressBar stats={stats} />
+
+        {/* Kanban board: scroll both axes independently inside here */}
+      <div className="flex-1 overflow-x-auto overflow-y-hidden p-6 min-h-0">
+        <DragDropContext onDragEnd={handleDragEnd}>
+          <div className="flex gap-5 h-full items-start">
+            {columns.map((col) => (
+              <KanbanColumn
+                key={col.id}
+                stage={col.id}
+                references={col.refs}
+                visibleCount={visibleCounts[col.id]}
+                onLoadMore={(s) =>
+                  setVisibleCounts((prev) => ({ ...prev, [s]: prev[s] + PAGE_SIZE }))
+                }
+                selectionMode={selectionMode}
+                onToggleSelectionMode={() => setSelectionMode(!selectionMode)}
+                selectedIds={selectedIds}
+                slug={slug}
+                onSelect={handleSelect}
+                onDetail={setDetailRef}
+                onOpenPage={(id) => onNavigate(`references/${id}`)}
+                onMove={handleMove}
+                onQuickExclude={handleQuickExclude}
+                onCustomExclude={(id) => setExclusion({ refId: id, targetStage: "excluded" })}
+                onDelete={handleDelete}
+                onUpdateQuality={handleUpdateQuality}
+                onMarkRetracted={(ref) => setRetractionTarget(ref)}
               />
-            </div>
-          </div>
-        ))}
-      </div>
-
-      {/* Board */}
-      <div className="flex-1 overflow-x-auto bg-[#F5F2ED] custom-scrollbar">
-        <DragDropContext onDragEnd={onDragEnd}>
-          <div className="flex gap-6 p-8 min-w-max h-full items-start">
-            {STAGES.map((stage) => {
-              const list = byStage[stage]
-              const sc = STAGE_COLORS[stage]
-              const visibleCount = pages[stage] * PAGE_SIZE
-              const visible = list.slice(0, visibleCount)
-              const remaining = list.length - visible.length
-
-              return (
-                <div key={stage} className="w-[320px] shrink-0 flex flex-col max-h-full">
-                  {/* Column header */}
-                  <div className="mb-4 px-4 py-3 rounded-xl bg-white border border-[#E5E2DA] shadow-sm flex items-center justify-between">
-                    <div className="flex items-center gap-3">
-                      <div
-                        className="w-3 h-3 rounded-full shadow-[0_0_8px_rgba(0,0,0,0.1)]"
-                        style={{ background: sc.border }}
-                      />
-                      <h3 className="font-serif text-lg text-[#2D2D2D]">{STAGE_LABELS[stage]}</h3>
-                    </div>
-                    <Badge
-                      className="text-[11px] font-mono font-medium rounded-lg border-0"
-                      style={{ background: sc.bg, color: sc.text }}
-                    >
-                      {list.length}
-                    </Badge>
-                  </div>
-
-                  <Droppable droppableId={stage}>
-                    {(provided, snapshot) => (
-                      <div
-                        ref={provided.innerRef}
-                        {...provided.droppableProps}
-                        className={cn(
-                          "flex-1 rounded-2xl p-2 space-y-3 transition-all duration-300 min-h-[500px]",
-                          snapshot.isDraggingOver
-                            ? "bg-[#E5E2DA]/30 ring-2 ring-inset ring-[#E5E2DA]/50"
-                            : "bg-transparent",
-                        )}
-                      >
-                        {list.length === 0 && (
-                          <div className="text-center py-12 px-6">
-                            <div className="w-12 h-12 bg-white/50 rounded-full flex items-center justify-center mx-auto mb-3 border border-dashed border-[#A1A1AA]/30">
-                              <ArrowRightLeft className="w-5 h-5 text-[#A1A1AA]/40" />
-                            </div>
-                            <p className="text-xs text-[#A1A1AA] italic leading-relaxed">
-                              Arraste artigos para esta fase para avançar no seu mapeamento sistemático.
-                            </p>
-                          </div>
-                        )}
-
-                        {visible.map((r, idx) => (
-                          <Draggable key={r.id} draggableId={r.id} index={idx}>
-                            {(p, snap) => (
-                              <div
-                                ref={p.innerRef}
-                                {...p.draggableProps}
-                                {...p.dragHandleProps}
-                                className={cn(
-                                  "group bg-white rounded-2xl p-4 cursor-grab active:cursor-grabbing transition-all duration-200 border border-transparent border-l-[4px]",
-                                  snap.isDragging
-                                    ? "shadow-[0_20px_50px_rgba(0,0,0,0.15)] scale-[1.02]"
-                                    : "shadow-[0_2px_8px_rgba(0,0,0,0.04)] hover:shadow-[0_8px_20px_rgba(0,0,0,0.08)] hover:border-r-[#E5E2DA] hover:border-t-[#E5E2DA] hover:border-b-[#E5E2DA]",
-                                  r.stage === "excluded" && "opacity-80 hover:opacity-100",
-                                )}
-                                style={{ borderLeftColor: sc.border }}
-                              >
-                                {/* Top row: stars + database tag + 3-dot menu */}
-                                <div className="flex justify-between items-start gap-2 mb-2">
-                                  <Stars
-                                    value={r.qualityScore || 0}
-                                    onChange={async (v) => {
-                                      const originalScore = r.qualityScore
-                                      updateReference(r.id, { qualityScore: v })
-                                      try {
-                                        await updateReferenceAction(slug, r.id, { qualityScore: v })
-                                      } catch (err: any) {
-                                        updateReference(r.id, { qualityScore: originalScore })
-                                        toast.error("Erro ao atualizar qualidade")
-                                      }
-                                    }}
-                                  />
-                                  <div className="flex items-center gap-1.5">
-                                    {r.database && (
-                                      <span className="text-[9px] uppercase tracking-widest font-bold text-[#A1A1AA] bg-[#FAF9F6] px-1.5 py-0.5 rounded border border-[#E5E2DA]">
-                                        {r.database}
-                                      </span>
-                                    )}
-                                    {/* 3-dot menu */}
-                                    <DropdownMenu>
-                                      <DropdownMenuTrigger asChild>
-                                        <Button
-                                          variant="ghost"
-                                          size="icon"
-                                          className="w-7 h-7 text-[#A1A1AA] hover:text-[#1C1C1E] hover:bg-[#F5F2ED] rounded-full opacity-0 group-hover:opacity-100 transition-opacity"
-                                          onClick={(e) => e.stopPropagation()}
-                                        >
-                                          <MoreHorizontal className="w-4 h-4" />
-                                        </Button>
-                                      </DropdownMenuTrigger>
-                                      <DropdownMenuContent
-                                        align="end"
-                                        className="w-52 rounded-xl shadow-xl border-[#E5E2DA]"
-                                        onClick={(e) => e.stopPropagation()}
-                                      >
-                                        {/* View */}
-                                        <DropdownMenuItem
-                                          className="gap-2 text-xs"
-                                          onClick={() => setDetailRef(r)}
-                                        >
-                                          <Eye className="w-3.5 h-3.5" />
-                                          Ver detalhes
-                                        </DropdownMenuItem>
-                                        <DropdownMenuItem
-                                          className="gap-2 text-xs"
-                                          onClick={() =>
-                                            router.push(`/projects/${slug}/references/${r.id}`)
-                                          }
-                                        >
-                                          <ExternalLink className="w-3.5 h-3.5" />
-                                          Abrir página completa
-                                        </DropdownMenuItem>
-
-                                        <DropdownMenuSeparator />
-
-                                        {/* Move to */}
-                                        <DropdownMenuSub>
-                                          <DropdownMenuSubTrigger className="gap-2 text-xs">
-                                            <ArrowRightLeft className="w-3.5 h-3.5" />
-                                            Mover para...
-                                          </DropdownMenuSubTrigger>
-                                          <DropdownMenuSubContent className="rounded-xl border-[#E5E2DA]">
-                                            {STAGES.filter((s) => s !== r.stage).map((s) => (
-                                              <DropdownMenuItem
-                                                key={s}
-                                                className="gap-2 text-xs"
-                                                onClick={async () => {
-                                                  if (s === "excluded") {
-                                                    setExclusion({ refId: r.id })
-                                                  } else {
-                                                    const originalStage = r.stage
-                                                    moveReference(r.id, s)
-                                                    try {
-                                                      await moveReferenceAction(slug, r.id, s)
-                                                      toast.success(`Movido para ${STAGE_LABELS[s]}.`)
-                                                    } catch (err: any) {
-                                                      moveReference(r.id, originalStage)
-                                                      toast.error("Erro ao mover: " + err.message)
-                                                    }
-                                                  }
-                                                }}
-                                              >
-                                                <div
-                                                  className="w-2 h-2 rounded-full"
-                                                  style={{ background: STAGE_COLORS[s].border }}
-                                                />
-                                                {STAGE_LABELS[s]}
-                                              </DropdownMenuItem>
-                                            ))}
-                                          </DropdownMenuSubContent>
-                                        </DropdownMenuSub>
-
-                                        {/* Quick exclude */}
-                                        {r.stage !== "excluded" && (
-                                          <DropdownMenuSub>
-                                            <DropdownMenuSubTrigger className="gap-2 text-xs text-[#B94040] focus:text-[#B94040]">
-                                              <X className="w-3.5 h-3.5" />
-                                              Excluir rapidamente
-                                            </DropdownMenuSubTrigger>
-                                            <DropdownMenuSubContent className="rounded-xl border-[#E5E2DA] w-52">
-                                              {[
-                                                { cat: "Duplicado", reason: "Identificado como duplicado na triagem rápida." },
-                                                { cat: "Tese/Dissertação", reason: "Trabalho académico (tese/dissertação) fora do escopo." },
-                                                { cat: "Capítulo de Livro", reason: "Capítulo de livro fora do escopo." },
-                                                { cat: "Livro", reason: "Livro (monografia) fora do escopo." },
-                                                { cat: "Artigo Retratado", reason: "Artigo formalmente retratado pelos autores ou editor." },
-                                                { cat: "Remoção por Título", reason: "Título não relacionado com o tema." },
-                                              ].map(({ cat, reason }) => (
-                                                <DropdownMenuItem
-                                                  key={cat}
-                                                  className="text-xs"
-                                                  onClick={() =>
-                                                    confirmExclusion(cat as ExclusionCategory, reason)
-                                                  }
-                                                >
-                                                  {cat}
-                                                </DropdownMenuItem>
-                                              ))}
-                                              <DropdownMenuSeparator />
-                                              <DropdownMenuItem
-                                                className="text-xs font-semibold"
-                                                onClick={() => setExclusion({ refId: r.id })}
-                                              >
-                                                Outro motivo...
-                                              </DropdownMenuItem>
-                                            </DropdownMenuSubContent>
-                                          </DropdownMenuSub>
-                                        )}
-
-                                        <DropdownMenuSeparator />
-
-                                        {/* Delete */}
-                                        <DropdownMenuItem
-                                          className="gap-2 text-xs text-destructive focus:text-destructive focus:bg-destructive/5"
-                                          onClick={() => setDeleteConfirm(r)}
-                                        >
-                                          <Trash2 className="w-3.5 h-3.5" />
-                                          Eliminar permanentemente
-                                        </DropdownMenuItem>
-                                      </DropdownMenuContent>
-                                    </DropdownMenu>
-                                  </div>
-                                </div>
-
-                                {/* Card content (clickable to open detail) */}
-                                <button
-                                  className="text-left w-full group/btn"
-                                  onClick={() => setDetailRef(r)}
-                                >
-                                  <h4 className="font-serif text-[15px] leading-snug text-[#2D2D2D] mb-2 group-hover/btn:text-primary transition-colors line-clamp-3">
-                                    {r.title}
-                                  </h4>
-                                  <div className="flex items-center gap-2 text-[11px] text-[#71717A] mb-1">
-                                    <span className="font-medium text-[#444444]">
-                                      {formatAuthors(r.authors)}
-                                    </span>
-                                    {r.year && (
-                                      <>
-                                        <span className="w-1 h-1 rounded-full bg-[#E5E2DA]" />
-                                        <span>{r.year}</span>
-                                      </>
-                                    )}
-                                  </div>
-                                  {r.journal && (
-                                    <div className="text-[10px] italic text-[#A1A1AA] line-clamp-1">
-                                      {r.journal}
-                                    </div>
-                                  )}
-                                </button>
-
-                                {/* Footer */}
-                                <div className="flex items-center gap-2 mt-3 pt-3 border-t border-[#FAF9F6]">
-                                  {r.type && (
-                                    <Badge
-                                      variant="outline"
-                                      className="text-[9px] py-0 px-1.5 h-5 bg-[#FAF9F6] border-[#E5E2DA] text-[#71717A] font-normal"
-                                    >
-                                      {r.type}
-                                    </Badge>
-                                  )}
-
-                                  {r.stage === "excluded" && r.exclusionCategory && (
-                                    <div className="flex items-center gap-1.5 px-2 py-1 bg-[#FFF1F1] rounded-md border border-[#FEE2E2]">
-                                      <div className="w-1 h-3 rounded-full bg-[#EF4444]" />
-                                      <span className="text-[9px] font-bold text-[#991B1B] uppercase tracking-tight">
-                                        {r.exclusionCategory}
-                                      </span>
-                                    </div>
-                                  )}
-                                </div>
-                              </div>
-                            )}
-                          </Draggable>
-                        ))}
-
-                        {provided.placeholder}
-
-                        {/* Load more */}
-                        {remaining > 0 && (
-                          <button
-                            onClick={() => loadMore(stage)}
-                            className="w-full mt-2 py-2.5 px-4 rounded-xl border border-dashed border-[#C8C2BB] text-[11px] font-bold text-[#A1A1AA] hover:bg-white hover:text-[#5F5E60] hover:border-[#A1A1AA] transition-all flex items-center justify-center gap-2"
-                          >
-                            <ChevronDown className="w-3.5 h-3.5" />
-                            Carregar mais ({remaining} restantes)
-                          </button>
-                        )}
-
-                        {/* Pagination info */}
-                        {list.length > PAGE_SIZE && (
-                          <div className="text-center text-[10px] text-[#A1A1AA] pt-1">
-                            A mostrar {Math.min(visible.length, list.length)} de {list.length}
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </Droppable>
-                </div>
-              )
-            })}
+            ))}
           </div>
         </DragDropContext>
       </div>
 
-      <AddReferenceModal open={openAdd} onOpenChange={setOpenAdd} />
-      <ReferenceDetailModal
-        reference={detailRef}
-        open={!!detailRef}
-        onOpenChange={(o) => !o && setDetailRef(null)}
+      <BulkActionsToolbar
+        selectedCount={selectedIds.length}
+        onClear={() => setSelectedIds([])}
+        onMove={handleBulkMove}
+        onExclude={handleBulkExclude}
+        onExport={() => toast.info("Exportação em massa em breve")}
       />
+
+      {/* Duplicate finder */}
+      {showDuplicateFinder && (
+        <DuplicateFinderModal
+          slug={slug}
+          onClose={() => setShowDuplicateFinder(false)}
+        />
+      )}
+
+      {/* Retraction modal */}
+      <RetractionModal
+        open={!!retractionTarget}
+        onOpenChange={(o) => !o && setRetractionTarget(null)}
+        referenceTitle={retractionTarget?.title ?? ""}
+        onConfirm={handleConfirmRetraction}
+      />
+
+      {/* Other modals */}
+      <AddReferenceModal open={openAdd} onOpenChange={setOpenAdd} />
+      {detailRef && (
+        <ReferenceDetailModal
+          reference={detailRef}
+          open={!!detailRef}
+          onOpenChange={(o) => !o && setDetailRef(null)}
+          onMove={handleMove}
+          onQuickExclude={handleQuickExclude}
+        />
+      )}
       <ExclusionModal
         open={!!exclusion}
-        onOpenChange={(o) => {
-          if (!o) setExclusion(null)
-        }}
+        onOpenChange={(o) => !o && setExclusion(null)}
         onConfirm={confirmExclusion}
       />
-
-      <AlertDialog open={!!deleteConfirm} onOpenChange={(o) => !o && setDeleteConfirm(null)}>
-        <AlertDialogContent className="rounded-2xl">
-          <AlertDialogHeader>
-            <AlertDialogTitle>Eliminar referência?</AlertDialogTitle>
-            <AlertDialogDescription className="text-sm leading-relaxed">
-              <span className="font-semibold text-[#1C1C1E]">{deleteConfirm?.title}</span>
-              <br />
-              Esta ação não pode ser desfeita.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel className="rounded-xl">Cancelar</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={async () => {
-                if (deleteConfirm) {
-                  const toastId = toast.loading("A eliminar...")
-                  try {
-                    await deleteReferenceAction(slug, deleteConfirm.id)
-                    deleteReference(deleteConfirm.id)
-                    toast.success("Referência eliminada.", { id: toastId })
-                  } catch (err: any) {
-                    toast.error("Erro ao eliminar: " + err.message, { id: toastId })
-                  }
-                }
-                setDeleteConfirm(null)
-              }}
-              className="bg-[#b94040] hover:bg-[#a23434] text-white rounded-xl"
-            >
-              Eliminar
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-    </>
-  )
-}
-
-function formatAuthors(authors: string[]): string {
-  if (authors.length === 0) return "—"
-  if (authors.length === 1) return authors[0]
-  if (authors.length === 2) return `${authors[0]}, ${authors[1]}`
-  return `${authors[0]} et al.`
-}
-
-function Stars({ value, onChange }: { value: number; onChange: (v: number) => void }) {
-  return (
-    <div className="flex items-center gap-0.5 mt-1.5" aria-label="Pontuação de qualidade">
-      {[1, 2, 3, 4, 5].map((n) => (
-        <button
-          key={n}
-          onClick={(e) => {
-            e.stopPropagation()
-            onChange(value === n ? 0 : n)
-          }}
-          aria-label={`${n} estrela${n > 1 ? "s" : ""}`}
-        >
-          <Star
-            className={cn(
-              "w-3 h-3 transition-colors",
-              n <= value ? "fill-[#c4914a] text-[#c4914a]" : "text-[#c8c2bb]",
-            )}
-          />
-        </button>
-      ))}
     </div>
   )
 }

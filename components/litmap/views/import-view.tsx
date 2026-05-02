@@ -80,6 +80,9 @@ export function ImportView() {
   const [defaultDatabase, setDefaultDatabase] = useState<string>("")
   const [isDeleting, setIsDeleting] = useState<string | null>(null)
   const [pendingDeleteBatch, setPendingDeleteBatch] = useState<string | null>(null)
+  
+  // Progress states
+  const [importProgress, setImportProgress] = useState<{ active: boolean; value: number }>({ active: false, value: 0 })
 
   // True while the project is not yet loaded from DB
   const projectIsLoading = !state.project
@@ -199,6 +202,16 @@ export function ImportView() {
       return
     }
 
+    setImportProgress({ active: true, value: 5 })
+    
+    // Simulate progress moving from 5% to 90% while the server action runs
+    const progressInterval = setInterval(() => {
+      setImportProgress(p => ({ 
+        active: true, 
+        value: p.value >= 90 ? 90 : p.value + (Math.random() * 10) 
+      }))
+    }, 600)
+
     try {
       const savedReferences = await importReferencesAction(slug, {
         references: toImport,
@@ -206,6 +219,9 @@ export function ImportView() {
         duplicateCount: duplicateCount,
         parseErrors: parseErrors
       })
+
+      clearInterval(progressInterval)
+      setImportProgress({ active: true, value: 100 })
 
       // Update local store with the references returned from DB (they have real IDs)
       addReferences(savedReferences)
@@ -220,10 +236,16 @@ export function ImportView() {
       })
 
       toast.success(`${savedReferences.length} referências importadas com sucesso!`, { id: toastId })
-      setRows([])
-      setFilenames([])
-      setParseErrors(0)
+      
+      setTimeout(() => {
+        setRows([])
+        setFilenames([])
+        setParseErrors(0)
+        setImportProgress({ active: false, value: 0 })
+      }, 800)
     } catch (error) {
+      clearInterval(progressInterval)
+      setImportProgress({ active: false, value: 0 })
       console.error(error)
       toast.error("Erro ao importar referências. Tente novamente.", { id: toastId })
     }
@@ -417,56 +439,75 @@ export function ImportView() {
                     </Button>
                   </div>
                 )}
-                <div className="p-6 border-b border-[#E5E2DA] flex flex-col md:flex-row md:items-center justify-between gap-4">
-                  <div>
-                    <h2 className="font-serif text-xl font-bold text-[#1C1C1E]">Confirmar Referências</h2>
-                    <p className="text-xs text-[#5F5E60] mt-1 flex items-center gap-1.5 font-mono">
-                      {rows.length} detectadas
-                      {duplicateCount > 0 && <span className="text-[#ba1a1a]">• {duplicateCount} duplicados</span>}
-                    </p>
+                <div className="p-6 border-b border-[#E5E2DA] flex flex-col gap-4">
+                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                    <div>
+                      <h2 className="font-serif text-xl font-bold text-[#1C1C1E]">Confirmar Referências</h2>
+                      <p className="text-xs text-[#5F5E60] mt-1 flex items-center gap-1.5 font-mono">
+                        {rows.length} detectadas
+                        {duplicateCount > 0 && <span className="text-[#ba1a1a]">• {duplicateCount} duplicados</span>}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {selectedCount > 0 && (
+                        <div className="flex items-center gap-2 pr-2 border-r border-[#E5E2DA]">
+                          <span className="text-[10px] font-bold text-[#A1A1AA] uppercase">Mudar selecionados para:</span>
+                          <Select onValueChange={(v) => {
+                            setRows(prev => prev.map(r => r.__selected ? { ...r, database: v } : r))
+                            toast.success(`Base de dados atualizada para ${selectedCount} referências.`)
+                          }}>
+                            <SelectTrigger className="w-40 h-8 border-[#E5E2DA] rounded-lg text-xs font-bold">
+                              <SelectValue placeholder="Escolher base..." />
+                            </SelectTrigger>
+                            <SelectContent className="rounded-xl">
+                              {(state.project?.databases || []).map(db => (
+                                <SelectItem key={db} value={db} className="text-xs">{db}</SelectItem>
+                              ))}
+                              {(!state.project?.databases || state.project.databases.length === 0) && (
+                                <div className="p-2 text-[10px] text-[#A1A1AA] italic">Nenhuma base configurada nas definições.</div>
+                              )}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      )}
+                      <Select value={filter} onValueChange={(v) => setFilter(v as typeof filter)}>
+                        <SelectTrigger className="w-36 h-9 border-[#E5E2DA] rounded-lg text-xs font-bold font-serif">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent className="rounded-xl">
+                          <SelectItem value="all">Todas</SelectItem>
+                          <SelectItem value="new">Apenas Novas</SelectItem>
+                          <SelectItem value="dup">Duplicados</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <Button
+                        onClick={importSelected}
+                        disabled={importProgress.active}
+                        className="bg-[#1C1C1E] hover:bg-black text-white px-6 h-9 rounded-lg font-serif font-bold text-xs gap-2 disabled:opacity-50"
+                      >
+                        Importar {selectedCount} <Plus className="w-3.5 h-3.5" />
+                      </Button>
+                      <Button variant="ghost" size="sm" onClick={() => setRows([])} className="text-[#A1A1AA] hover:text-[#ba1a1a]">
+                        <X className="w-4 h-4" />
+                      </Button>
+                    </div>
                   </div>
-                  <div className="flex items-center gap-2">
-                    {selectedCount > 0 && (
-                      <div className="flex items-center gap-2 pr-2 border-r border-[#E5E2DA]">
-                        <span className="text-[10px] font-bold text-[#A1A1AA] uppercase">Mudar selecionados para:</span>
-                        <Select onValueChange={(v) => {
-                          setRows(prev => prev.map(r => r.__selected ? { ...r, database: v } : r))
-                          toast.success(`Base de dados atualizada para ${selectedCount} referências.`)
-                        }}>
-                          <SelectTrigger className="w-40 h-8 border-[#E5E2DA] rounded-lg text-xs font-bold">
-                            <SelectValue placeholder="Escolher base..." />
-                          </SelectTrigger>
-                          <SelectContent className="rounded-xl">
-                            {(state.project?.databases || []).map(db => (
-                              <SelectItem key={db} value={db} className="text-xs">{db}</SelectItem>
-                            ))}
-                            {(!state.project?.databases || state.project.databases.length === 0) && (
-                              <div className="p-2 text-[10px] text-[#A1A1AA] italic">Nenhuma base configurada nas definições.</div>
-                            )}
-                          </SelectContent>
-                        </Select>
+                  
+                  {/* Progress Bar */}
+                  {importProgress.active && (
+                    <div className="w-full bg-[#FAF8F4] border border-[#E5E2DA] rounded-xl p-3 flex flex-col gap-2">
+                      <div className="flex justify-between text-[10px] font-bold tracking-widest uppercase text-[#5F5E60]">
+                        <span>A gravar no banco de dados...</span>
+                        <span>{Math.round(importProgress.value)}%</span>
                       </div>
-                    )}
-                    <Select value={filter} onValueChange={(v) => setFilter(v as typeof filter)}>
-                      <SelectTrigger className="w-36 h-9 border-[#E5E2DA] rounded-lg text-xs font-bold font-serif">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent className="rounded-xl">
-                        <SelectItem value="all">Todas</SelectItem>
-                        <SelectItem value="new">Apenas Novas</SelectItem>
-                        <SelectItem value="dup">Duplicados</SelectItem>
-                      </SelectContent>
-                    </Select>
-                    <Button
-                      onClick={importSelected}
-                      className="bg-[#1C1C1E] hover:bg-black text-white px-6 h-9 rounded-lg font-serif font-bold text-xs gap-2"
-                    >
-                      Importar {selectedCount} <Plus className="w-3.5 h-3.5" />
-                    </Button>
-                    <Button variant="ghost" size="sm" onClick={() => setRows([])} className="text-[#A1A1AA] hover:text-[#ba1a1a]">
-                      <X className="w-4 h-4" />
-                    </Button>
-                  </div>
+                      <div className="w-full bg-[#E5E2DA] rounded-full h-1.5 overflow-hidden">
+                        <div 
+                          className="bg-[#6B8F71] h-1.5 rounded-full transition-all duration-300 ease-out" 
+                          style={{ width: `${importProgress.value}%` }}
+                        />
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 {rows.length > PREVIEW_LIMIT && !showAll && (

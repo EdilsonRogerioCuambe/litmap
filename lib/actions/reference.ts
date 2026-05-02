@@ -164,6 +164,63 @@ export async function deleteReferenceAction(slug: string, referenceId: string) {
   revalidatePath(`/projects/${slug}/references`)
   revalidatePath(`/projects/${slug}/kanban`)
   revalidatePath(`/projects/${slug}/dashboard`)
+ 
+   return true
+ }
+ 
+export async function bulkUpdateReferencesAction(
+  slug: string, 
+  referenceIds: string[], 
+  data: { stage?: string, exclusionCategory?: string, exclusionReason?: string, qualityScore?: number }
+) {
+  const session = await auth.api.getSession({
+    headers: await headers()
+  })
+
+  if (!session?.user) {
+    throw new Error("Não autorizado")
+  }
+
+  const project = await prisma.project.findFirst({
+    where: { 
+      slug: slug,
+      members: { some: { userId: session.user.id } }
+    }
+  })
+
+  if (!project) {
+    throw new Error("Projeto não encontrado ou sem permissão")
+  }
+
+  // Process in batches if necessary, but updateMany is fine for simple fields
+  const updateData: any = { ...data }
+  if (data.stage === "excluded" && !data.exclusionCategory) {
+    // Default category if moving to excluded without one
+    updateData.exclusionCategory = "Outro"
+  }
+
+  await prisma.reference.updateMany({
+    where: {
+      id: { in: referenceIds },
+      projectId: project.id
+    },
+    data: updateData
+  })
+
+  await prisma.projectLog.create({
+    data: {
+      action: "BULK_UPDATE_REFERENCES",
+      details: `Actualizou em massa ${referenceIds.length} referências (Fase: ${data.stage || 'sem alteração'})`,
+      projectId: project.id,
+      userId: session.user.id
+    }
+  })
+
+  revalidatePath(`/projects/${slug}`)
+  revalidatePath(`/projects/${slug}/references`)
+  revalidatePath(`/projects/${slug}/kanban`)
+  revalidatePath(`/projects/${slug}/dashboard`)
 
   return true
 }
+
